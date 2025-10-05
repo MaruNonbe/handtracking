@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Hand Tracking Demo</title>
+  <style>
+    /* 画面いっぱいに表示するためのスタイル */
+    body { margin: 0; }
+    canvas { display: block; }
+    #video-input { display: none; } /* カメラ映像は裏で使うので非表示 */
+  </style>
+</head>
+<body>
+  <canvas id="output-canvas"></canvas>
+  <video id="video-input"></video>
+
+  <script type="module">
+// --- ライブラリをインポート ---
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.138.0/build/three.module.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.138.0/examples/jsm/loaders/GLTFLoader.js';
+import { Hands } from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
+import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
+
+// --- 基本設定 ---
+const videoElement = document.getElementById('video-input');
+const canvasElement = document.getElementById('output-canvas');
+const canvasCtx = canvasElement.getContext('2d');
+
+// --- 3Dシーンの準備 (Three.js) ---
+const scene = new THREE.Scene();
+const camera3D = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, alpha: true }); // alpha:trueで背景を透過
+renderer.setSize(window.innerWidth, window.innerHeight);
+camera3D.position.z = 5;
+
+// 光源を追加
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambientLight);
+const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+directionalLight.position.set(0, 1, 1);
+scene.add(directionalLight);
+
+// --- 3Dモデルの準備 ---
+// ★★★ あなたのGLBファイル名に書き換えてください ★★★
+const modelPath = 'YOUR_MODEL.glb'; 
+let myModel = null;
+
+const loader = new GLTFLoader();
+loader.load(modelPath, (gltf) => {
+    myModel = gltf.scene;
+    myModel.scale.set(0.5, 0.5, 0.5); // モデルのサイズを調整
+    scene.add(myModel);
+    console.log('モデルの読み込みが完了しました。');
+}, undefined, (error) => {
+    console.error('モデルの読み込みに失敗しました:', error);
+    // 読み込み失敗時の代替として、箱を表示
+    const geometry = new THREE.BoxGeometry();
+    const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+    myModel = new THREE.Mesh(geometry, material);
+    scene.add(myModel);
+});
+
+// --- ハンドトラッキングの準備 (MediaPipe) ---
+const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+    maxNumHands: 1, // 検出する手の最大数
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+});
+
+// 検出結果が出たら呼ばれる関数
+hands.onResults(onResults);
+
+// --- カメラの起動 ---
+const camera = new Camera(videoElement, {
+    onFrame: async () => {
+        await hands.send({ image: videoElement });
+    },
+    width: 1280,
+    height: 720
+});
+camera.start();
+
+// --- メインの処理 ---
+function onResults(results) {
+    // 2Dのカメラ映像を背景に描画
+    canvasCtx.save();
+    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+    // 手が検出されたら
+    if (results.multiHandLandmarks && myModel) {
+        // 最初の_手を取得
+        const landmarks = results.multiHandLandmarks[0];
+        
+        // 人差し指の先端（8番目のポイント）の座標を取得
+        const fingerTip = landmarks[8]; 
+        
+        // MediaPipeの座標（0.0～1.0）を画面の3D座標に変換
+        const screenX = fingerTip.x * 2 - 1;
+        const screenY = -(fingerTip.y * 2 - 1); // Y軸は上下反転
+        
+        // 3Dモデルを指の位置に動かす
+        const vector = new THREE.Vector3(screenX, screenY, 0.5);
+        vector.unproject(camera3D);
+        const dir = vector.sub(camera3D.position).normalize();
+        const distance = -camera3D.position.z / dir.z;
+        const pos = camera3D.position.clone().add(dir.multiplyScalar(distance));
+        myModel.position.copy(pos);
+
+        // モデルを少し回転させて見栄えを良くする
+        myModel.rotation.y += 0.01;
+        myModel.rotation.x += 0.02;
+    }
+    
+    // 3Dシーンをレンダリング（重要！）
+    renderer.render(scene, camera3D);
+
+    canvasCtx.restore();
+}
+  </script>
+</body>
+</html>
